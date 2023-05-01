@@ -11,12 +11,13 @@ from .oxford_pets import OxfordPets
 @DATASET_REGISTRY.register()
 class ImageNet(DatasetBase):
 
-    dataset_dir = "imagenet"
+    dataset_dir = "imagenet_1k"
 
     def __init__(self, cfg):
         root = os.path.abspath(os.path.expanduser(cfg.DATASET.ROOT))
         self.dataset_dir = os.path.join(root, self.dataset_dir)
-        self.image_dir = os.path.join(self.dataset_dir, "images")
+        self.image_dir = self.dataset_dir
+        # self.image_dir = os.path.join(self.dataset_dir, "images")
         self.preprocessed = os.path.join(self.dataset_dir, "preprocessed.pkl")
         self.split_fewshot_dir = os.path.join(self.dataset_dir, "split_fewshot")
         mkdir_if_missing(self.split_fewshot_dir)
@@ -72,6 +73,7 @@ class ImageNet(DatasetBase):
                 line = line.strip().split(" ")
                 folder = line[0]
                 classname = " ".join(line[1:])
+                # print(classname, classnames, folder)
                 classnames[folder] = classname
         return classnames
 

@@ -5,7 +5,7 @@ from dassl.utils import listdir_nohidden
 
 from .imagenet import ImageNet
 
-TO_BE_IGNORED = ["README.txt"]
+TO_BE_IGNORED = ["README.txt", "classnames.txt"]
 
 
 @DATASET_REGISTRY.register()
@@ -15,12 +15,12 @@ class ImageNetA(DatasetBase):
     This dataset is used for testing only.
     """
 
-    dataset_dir = "imagenet-adversarial"
+    dataset_dir = "imagenet-a"
 
     def __init__(self, cfg):
         root = os.path.abspath(os.path.expanduser(cfg.DATASET.ROOT))
         self.dataset_dir = os.path.join(root, self.dataset_dir)
-        self.image_dir = os.path.join(self.dataset_dir, "imagenet-a")
+        self.image_dir = os.path.join(self.dataset_dir)
 
         text_file = os.path.join(self.dataset_dir, "classnames.txt")
         classnames = ImageNet.read_classnames(text_file)

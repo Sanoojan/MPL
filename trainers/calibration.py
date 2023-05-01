@@ -4,8 +4,10 @@ import math
 import copy
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.nn import functional as F
 from torch.cuda.amp import GradScaler, autocast
+import einops
 
 from dassl.engine import TRAINER_REGISTRY, TrainerX
 from dassl.metrics import compute_accuracy
@@ -14,10 +16,12 @@ from dassl.optim import build_optimizer, build_lr_scheduler
 
 from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
+from dassl.metrics.calib_metrics import ECE_bins,SCE_bins
+from utils.losses import ClassficationAndMDCA, LogitMarginL1,ClassficationAndMDCA_dist,classification_L2weighted_loss
 
 _tokenizer = _Tokenizer()
 
-
+print("calibration_init...........................")
 def load_clip_to_cpu(cfg):
     backbone_name = cfg.MODEL.BACKBONE.NAME
     url = clip._MODELS[backbone_name]
@@ -30,14 +34,15 @@ def load_clip_to_cpu(cfg):
 
     except RuntimeError:
         state_dict = torch.load(model_path, map_location="cpu")
-    design_details = {"trainer": 'MaPLe',
+    design_details = {"trainer": 'Calibration',
                       "vision_depth": 0,
                       "language_depth": 0, "vision_ctx": 0,
                       "language_ctx": 0,
-                      "maple_length": cfg.TRAINER.MAPLE.N_CTX}
+                      "maple_length": cfg.TRAINER.CALIBRATION.N_CTX}
     model = clip.build_model(state_dict or model.state_dict(), design_details)
 
     return model
+
 
 
 class TextEncoder(nn.Module):
@@ -70,15 +75,15 @@ class MultiModalPromptLearner(nn.Module):
     def __init__(self, cfg, classnames, clip_model):
         super().__init__()
         n_cls = len(classnames)
-        n_ctx = cfg.TRAINER.MAPLE.N_CTX
-        ctx_init = cfg.TRAINER.MAPLE.CTX_INIT
+        n_ctx = cfg.TRAINER.CALIBRATION.N_CTX
+        ctx_init = cfg.TRAINER.CALIBRATION.CTX_INIT
         dtype = clip_model.dtype
         ctx_dim = clip_model.ln_final.weight.shape[0]
         clip_imsize = clip_model.visual.input_resolution
         cfg_imsize = cfg.INPUT.SIZE[0]
         # Default is 1, which is compound shallow prompting
-        assert cfg.TRAINER.MAPLE.PROMPT_DEPTH >= 1, "For MaPLe, PROMPT_DEPTH should be >= 1"
-        self.compound_prompts_depth = cfg.TRAINER.MAPLE.PROMPT_DEPTH  # max=12, but will create 11 such shared prompts
+        assert cfg.TRAINER.CALIBRATION.PROMPT_DEPTH >= 1, "For Calibration, PROMPT_DEPTH should be >= 1"
+        self.compound_prompts_depth = cfg.TRAINER.CALIBRATION.PROMPT_DEPTH  # max=12, but will create 11 such shared prompts
         assert cfg_imsize == clip_imsize, f"cfg_imsize ({cfg_imsize}) must equal to clip_imsize ({clip_imsize})"
 
         if ctx_init and (n_ctx) <= 4:
@@ -95,9 +100,9 @@ class MultiModalPromptLearner(nn.Module):
             ctx_vectors = torch.empty(n_ctx, ctx_dim, dtype=dtype)
             nn.init.normal_(ctx_vectors, std=0.02)
             prompt_prefix = " ".join(["X"] * n_ctx)
-        print('MaPLe design: Multi-modal Prompt Learning')
+        print('Calibration design: Multi-modal Prompt Learning')
         print(f'Initial context: "{prompt_prefix}"')
-        print(f"Number of MaPLe context words (tokens): {n_ctx}")
+        print(f"Number of Calibration context words (tokens): {n_ctx}")
         # These below, related to the shallow prompts
         # Linear layer so that the tokens will project to 512 and will be initialized from 768
         self.proj = nn.Linear(ctx_dim, 768)
@@ -106,7 +111,7 @@ class MultiModalPromptLearner(nn.Module):
         # These below parameters related to the shared prompts
         # Define the compound prompts for the deeper layers
 
-        # Minimum can be 1, which defaults to shallow MaPLe
+        # Minimum can be 1, which defaults to shallow Calibration
         # compound prompts
         self.compound_prompts_text = nn.ParameterList([nn.Parameter(torch.empty(n_ctx, 512))
                                                       for _ in range(self.compound_prompts_depth - 1)])
@@ -185,6 +190,11 @@ class CustomCLIP(nn.Module):
         self.text_encoder = TextEncoder(clip_model)
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
+        
+        self.loss_fn=LogitMarginL1()
+        # self.loss_fn=ClassficationAndMDCA()
+        # self.loss_fn=ClassficationAndMDCA_dist()
+        # self.loss_fn=classification_L2weighted_loss
 
     def forward(self, image, label=None):
         tokenized_prompts = self.tokenized_prompts
@@ -192,14 +202,52 @@ class CustomCLIP(nn.Module):
 
         prompts, shared_ctx, deep_compound_prompts_text, deep_compound_prompts_vision = self.prompt_learner()
         text_features = self.text_encoder(prompts, tokenized_prompts, deep_compound_prompts_text)
-        image_features = self.image_encoder(image.type(self.dtype), shared_ctx, deep_compound_prompts_vision)
+        image_features,all_tokens = self.image_encoder(image.type(self.dtype), shared_ctx, deep_compound_prompts_vision,ret_all=True)
 
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         logits = logit_scale * image_features @ text_features.t()
 
         if self.prompt_learner.training:
-            return F.cross_entropy(logits, label)
+            
+            
+            propmt_token_mean=all_tokens[:,-shared_ctx.shape[0]:,:].mean(dim=1)
+            propmt_token_mean = propmt_token_mean / propmt_token_mean.norm(dim=-1, keepdim=True)
+            prompt_logits=logit_scale * propmt_token_mean @ text_features.t()
+            
+            return self.loss_fn(logits, prompt_logits,label)[0]
+            
+            # y_pre_rev=einops.rearrange(prompt_logits,'b n -> n b')
+            # y_log_rev=einops.rearrange(logits,'b n -> n b')
+            
+            # mask = torch.any(y_pre_rev != 0, dim=1)
+            # y_pre_rev = y_pre_rev[mask]
+            # y_log_rev= y_log_rev[mask]
+            # y_pre_rev=F.softmax(y_pre_rev,dim=1)
+            # y_log_rev=F.softmax(y_log_rev,dim=1)
+            # eps=1e-6
+            # match_loss=F.kl_div(torch.log(y_pre_rev+eps),y_log_rev+eps,reduction='batchmean')
+            
+            # match_loss=F.l1_loss(y_pre_rev,y_log_rev)
+            
+            y_pre=np.array(prompt_logits.detach().cpu())
+            y_logit=np.array(logits.detach().cpu())
+            y_tr=np.array(label.detach().cpu())
+            
+            
+            
+            
+            # # print(y_pre.shape)
+            ece_bins,ece_props = ECE_bins().bins(y_pre, y_tr, n_bins=15)
+            sce_bins,sce_props = SCE_bins().bins(y_pre, y_tr, n_bins=15)
+            
+            logit_ece_bins,logit_ece_props = ECE_bins().bins(y_logit, y_tr, n_bins=15)
+            logit_sce_bins,logit_sce_props = SCE_bins().bins(y_logit, y_tr, n_bins=15)
+            #find the device of the logits
+            device=logits.device
+            
+            l2=F.mse_loss(torch.tensor(ece_props).to(device), torch.tensor(logit_ece_props).to(device)) 
+            return l2*F.cross_entropy(logits, label)
 
         return logits
 
@@ -209,9 +257,9 @@ def _get_clones(module, N):
 
 
 @TRAINER_REGISTRY.register()
-class MaPLe(TrainerX):
+class Calibration(TrainerX):
     def check_cfg(self, cfg):
-        assert cfg.TRAINER.MAPLE.PREC in ["fp16", "fp32", "amp"]
+        assert cfg.TRAINER.CALIBRATION.PREC in ["fp16", "fp32", "amp"]
 
     def build_model(self):
         cfg = self.cfg
@@ -220,7 +268,7 @@ class MaPLe(TrainerX):
         print(f"Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})")
         clip_model = load_clip_to_cpu(cfg)
 
-        if cfg.TRAINER.MAPLE.PREC == "fp32" or cfg.TRAINER.MAPLE.PREC == "amp":
+        if cfg.TRAINER.CALIBRATION.PREC == "fp32" or cfg.TRAINER.CALIBRATION.PREC == "amp":
             # CLIP's default precision is fp16
             clip_model.float()
 
@@ -248,19 +296,19 @@ class MaPLe(TrainerX):
         if cfg.MODEL.INIT_WEIGHTS:
             load_pretrained_weights(self.model, cfg.MODEL.INIT_WEIGHTS)
 
-        # self.device= torch.device(self.cfg.DEBUG_DEVICE) if self.cfg.DEBUG else self.device
+        self.device= torch.device(self.cfg.DEBUG_DEVICE) if self.cfg.DEBUG else self.device
         self.model.to(self.device)
         # NOTE: only give prompt_learner to the optimizer
         self.optim = build_optimizer(self.model, cfg.OPTIM)
         self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
         self.register_model("MultiModalPromptLearner", self.model, self.optim, self.sched)
 
-        self.scaler = GradScaler() if cfg.TRAINER.MAPLE.PREC == "amp" else None
+        self.scaler = GradScaler() if cfg.TRAINER.CALIBRATION.PREC == "amp" else None
 
         # Note that multi-gpu training could be slow because CLIP's size is
         # big, which slows down the copy operation in DataParallel
-        device_count = torch.cuda.device_count()
-        # device_count = torch.cuda.device_count() if not self.cfg.DEBUG else 1
+        device_count = torch.cuda.device_count() if not self.cfg.DEBUG else 1
+        
         if device_count > 1:
             print(f"Multiple GPUs detected (n_gpus={device_count}), use all of them!")
             self.model = nn.DataParallel(self.model)
@@ -272,7 +320,7 @@ class MaPLe(TrainerX):
         optim = self.optim
         scaler = self.scaler
 
-        prec = self.cfg.TRAINER.MAPLE.PREC
+        prec = self.cfg.TRAINER.CALIBRATION.PREC
         if prec == "amp":
             with autocast():
                 loss = model(image, label)

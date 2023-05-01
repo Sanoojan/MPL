@@ -29,6 +29,31 @@ import trainers.zsclip
 import trainers.maple
 import trainers.independentVL
 import trainers.vpt
+import trainers.calibration
+
+DeBUG=False
+DeBug_Device="cuda:4"
+if DeBUG:
+    print("Debug the file")
+    import sys
+    sys.path.append("/nfs/users/ext_sanoojan.baliah/Sanoojan/MPL/")
+    #Debug
+def debug():
+    DATA="/nfs/users/ext_sanoojan.baliah/Sanoojan/data"
+    TRAINER="Calibration"
+    DATASET="imagenet_1k"
+    SEED=2
+    CFG="vit_b16_c2_ep5_batch64_2ctx_cross_datasets_calib"
+    SHOTS=16
+    DIR=f"output_check_delete/{DATASET}/{TRAINER}/{CFG}_{SHOTS}shots/seed{SEED}"
+    args.root=DATA 
+    args.seed= SEED 
+    args.trainer=TRAINER 
+    args.dataset_config_file= f"MPL/configs/datasets/{DATASET}.yaml"
+    args.config_file= f"MPL/configs/trainers/{TRAINER}/{CFG}.yaml" 
+    args.output_dir=DIR
+    args.opts=['DATASET.NUM_SHOTS', f"{SHOTS}"]
+    
 
 def print_args(args, cfg):
     print("***************")
@@ -127,6 +152,18 @@ def extend_cfg(cfg):
     cfg.TRAINER.VPT.PREC = "fp16"  # fp16, fp32, amp
     cfg.TRAINER.VPT.PROMPT_DEPTH_VISION = 1  # if set to 1, will represent shallow vision prompting only
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+    
+    # Config for Calibration
+    cfg.TRAINER.CALIBRATION = CN()
+    cfg.TRAINER.CALIBRATION.N_CTX = 2  # number of context vectors
+    cfg.TRAINER.CALIBRATION.CTX_INIT = "a photo of a"  # initialization words
+    cfg.TRAINER.CALIBRATION.PREC = "fp16"  # fp16, fp32, amp
+    cfg.TRAINER.CALIBRATION.PROMPT_DEPTH = 9 # Max 12, minimum 0, for 1 it will act as shallow MaPLe (J=1)
+    cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+    
+    # For Debugging
+    cfg.DEBUG = DeBUG
+    cfg.DEBUG_DEVICE=DeBug_Device
 
 
 def setup_cfg(args):
@@ -178,6 +215,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    print("Passing arguments to main")
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=str, default="", help="path to dataset")
     parser.add_argument("--output-dir", type=str, default="", help="output directory")
@@ -231,4 +269,7 @@ if __name__ == "__main__":
         help="modify config options using the command-line",
     )
     args = parser.parse_args()
+    print(args)
+    if DeBUG:
+        debug()
     main(args)

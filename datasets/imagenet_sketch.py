@@ -4,7 +4,7 @@ from dassl.data.datasets import DATASET_REGISTRY, Datum, DatasetBase
 from dassl.utils import listdir_nohidden
 
 from .imagenet import ImageNet
-
+TO_BE_IGNORED = ["README.txt", "classnames.txt"]
 
 @DATASET_REGISTRY.register()
 class ImageNetSketch(DatasetBase):
@@ -13,12 +13,12 @@ class ImageNetSketch(DatasetBase):
     This dataset is used for testing only.
     """
 
-    dataset_dir = "imagenet-sketch"
+    dataset_dir = "sketch"
 
     def __init__(self, cfg):
         root = os.path.abspath(os.path.expanduser(cfg.DATASET.ROOT))
         self.dataset_dir = os.path.join(root, self.dataset_dir)
-        self.image_dir = os.path.join(self.dataset_dir, "images")
+        self.image_dir = os.path.join(self.dataset_dir)
 
         text_file = os.path.join(self.dataset_dir, "classnames.txt")
         classnames = ImageNet.read_classnames(text_file)
@@ -30,6 +30,7 @@ class ImageNetSketch(DatasetBase):
     def read_data(self, classnames):
         image_dir = self.image_dir
         folders = listdir_nohidden(image_dir, sort=True)
+        folders = [f for f in folders if f not in TO_BE_IGNORED]
         items = []
 
         for label, folder in enumerate(folders):

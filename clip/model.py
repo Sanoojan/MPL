@@ -350,6 +350,10 @@ class Transformer(nn.Module):
             self.resblocks = nn.Sequential(
                 *[ResidualAttentionBlock_MaPLe(width, heads, attn_mask, design_details, text_layer, i)
                   for i in range(layers)])
+        elif current_trainer == 'Calibration':
+            self.resblocks = nn.Sequential(
+                *[ResidualAttentionBlock_MaPLe(width, heads, attn_mask, design_details, text_layer, i)
+                  for i in range(layers)])
         else:
             # Corresponds to default CoOp or CoCoOp
             assert current_trainer == 'CoOp' or current_trainer == 'CoCoOp'
@@ -476,6 +480,48 @@ class VisionTransformer_MaPLe(nn.Module):
         return x
 
 
+
+class VisionTransformer_calib(VisionTransformer_MaPLe):
+    def forward(self, x: torch.Tensor, shared_ctx, compound_deeper_prompts,ret_all=False):
+        x = self.conv1(x)  # shape = [*, width, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat(
+            [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
+             x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.positional_embedding.to(x.dtype)
+
+        # After positional embeddings, we will attach prompts with the model, remember only those
+        # are trainable parameters here in whole image encoder.
+        if self.VPT_shallow:
+            visual_ctx = shared_ctx.expand(x.shape[0], -1, -1).half()
+            x = torch.cat([x, visual_ctx], dim=1)
+        else:
+            assert self.prompt_till_layer_visual == 0
+
+
+        # Normal code as before
+        x = self.ln_pre(x)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        # Again combine the inputs, so nn.sequential can work
+        outputs = self.transformer([x, compound_deeper_prompts, 0])  # third argument is counter
+        x = outputs[0]
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        x_cls = self.ln_post(x[:, 0, :])
+        if ret_all:
+            x_all = self.ln_post(x)
+
+        if self.proj is not None:
+            x_cls = x_cls @ self.proj
+            if ret_all:
+                x_all = x_all @ self.proj   
+        if ret_all:
+            return x_cls, x_all
+        return x_cls
+    
+
 class CLIP(nn.Module):
     def __init__(self,
                  embed_dim: int,
@@ -510,6 +556,16 @@ class CLIP(nn.Module):
             vision_heads = vision_width // 64
             if trainer == "MaPLe":
                 self.visual = VisionTransformer_MaPLe(
+                    input_resolution=image_resolution,
+                    patch_size=vision_patch_size,
+                    width=vision_width,
+                    layers=vision_layers,
+                    heads=vision_heads,
+                    output_dim=embed_dim,
+                    design_details=design_details
+                )
+            elif trainer == "Calibration":
+                self.visual = VisionTransformer_calib(
                     input_resolution=image_resolution,
                     patch_size=vision_patch_size,
                     width=vision_width,

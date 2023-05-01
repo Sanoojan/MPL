@@ -1,0 +1,16 @@
+datasets/__pycache__/
+output/*
+output_run/
+output_run_check/
+output_run_kl_match_classwise/
+output_run_weight_mul/
+run_outs/
+trainers/__pycache__/
+*.out
+clip/__pycache__/
+output_run_weight_mul_check/
+Output_oldname/
+Output_oldname_imnet/
+output_coop/*
+utils/__pycache__/*
+

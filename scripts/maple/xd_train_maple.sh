@@ -3,11 +3,11 @@
 #cd ../..
 
 # custom config
-DATA="/path/to/dataset/folder"
+DATA="/nfs/users/ext_sanoojan.baliah/Sanoojan/data"
 TRAINER=MaPLe
 
-DATASET=$1
-SEED=$2
+DATASET=imagenet_1k
+SEED=2
 
 CFG=vit_b16_c2_ep5_batch4_2ctx_cross_datasets
 SHOTS=16
@@ -19,7 +19,7 @@ if [ -d "$DIR" ]; then
 else
     echo "Run this job and save the output to ${DIR}"
 
-    python train.py \
+    CUDA_VISIBLE_DEVICES=4 python train.py \
     --root ${DATA} \
     --seed ${SEED} \
     --trainer ${TRAINER} \
