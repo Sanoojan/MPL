@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=cocoop
+#SBATCH --job-name=cocoop-zero_shot
 #SBATCH --gres gpu:1
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task=10
@@ -33,7 +33,7 @@ SHOTS=16
 # CSC=True  # class-specific context (False or True)
 
 
-DIR=output/base2new/train_base/${DATASET}/shots_${SHOTS}/${TRAINER}/${CFG}/seed${SEED}
+DIR=output/base2new/train_base_with_zs_KL_temp1/${DATASET}/shots_${SHOTS}/${TRAINER}/${CFG}/seed${SEED}
 if [ -d "$DIR" ]; then
     echo "Results are available in ${DIR}. Resuming..."
     python train.py \

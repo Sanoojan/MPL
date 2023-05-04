@@ -3,7 +3,7 @@
 #SBATCH --gres gpu:1
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task=10
-#SBATCH --partition=default-long
+#SBATCH --partition=default-short
 
 #cd ../..
 
