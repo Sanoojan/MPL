@@ -33,6 +33,6 @@ TRAINER:
     N_CTX: 4
     CTX_INIT: "a photo of a"
     PREC: "fp16"
-    DISTILL: "Hand_crafted_text_to_text"
+    DISTILL: "Hand_crafted"
 
   # Hand_crafted_text_to_text,Hand_crafted

@@ -3,7 +3,7 @@
 #SBATCH --gres gpu:1
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task=10
-#SBATCH --partition=default-long
+#SBATCH --partition=default-short
 
 #cd ../..
 
@@ -16,6 +16,7 @@ SEED=2
 
 CFG=vit_b16_c4_ep10_batch1_ctxv1
 SHOTS=16
+DEVICE=13
 
 # DATA="/nfs/users/ext_sanoojan.baliah/Sanoojan/data"
 # TRAINER=CoOp
@@ -33,33 +34,35 @@ SHOTS=16
 # CSC=True  # class-specific context (False or True)
 
 
-DIR=output/base2new/train_base_with_zs_KL_temp1/${DATASET}/shots_${SHOTS}/${TRAINER}/${CFG}/seed${SEED}
+DIR=output/base2new/train_baseline_ep2/${DATASET}/shots_${SHOTS}/${TRAINER}/${CFG}/seed${SEED}
 if [ -d "$DIR" ]; then
     echo "Results are available in ${DIR}. Resuming..."
-    python train.py \
+    CUDA_VISIBLE_DEVICES=${DEVICE} python train.py \
     --root ${DATA} \
     --seed ${SEED} \
     --trainer ${TRAINER} \
     --dataset-config-file configs/datasets/${DATASET}.yaml \
     --config-file configs/trainers/${TRAINER}/${CFG}.yaml \
     --output-dir ${DIR} \
+    --resume ${DIR} \
     DATASET.NUM_SHOTS ${SHOTS} \
     DATASET.SUBSAMPLE_CLASSES base
 else
     echo "Run this job and save the output to ${DIR}"
-    python train.py \
+    CUDA_VISIBLE_DEVICES=${DEVICE} python train.py \
     --root ${DATA} \
     --seed ${SEED} \
     --trainer ${TRAINER} \
     --dataset-config-file configs/datasets/${DATASET}.yaml \
     --config-file configs/trainers/${TRAINER}/${CFG}.yaml \
     --output-dir ${DIR} \
+    --resume ${DIR} \
     DATASET.NUM_SHOTS ${SHOTS} \
     DATASET.SUBSAMPLE_CLASSES base
 fi
 
 
-LOADEP=10
+LOADEP=2
 SUB=new
 
 
@@ -71,7 +74,7 @@ if [ -d "$DIR" ]; then
     echo "Evaluating model"
     echo "Results are available in ${DIR}. Resuming..."
 
-    python train.py \
+    CUDA_VISIBLE_DEVICES=${DEVICE} python train.py \
     --root ${DATA} \
     --seed ${SEED} \
     --trainer ${TRAINER} \
@@ -88,7 +91,7 @@ else
     echo "Evaluating model"
     echo "Runing the first phase job and save the output to ${DIR}"
 
-    python train.py \
+    CUDA_VISIBLE_DEVICES=${DEVICE} python train.py \
     --root ${DATA} \
     --seed ${SEED} \
     --trainer ${TRAINER} \

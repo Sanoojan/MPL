@@ -11,15 +11,15 @@ from dassl.engine import TRAINER_REGISTRY, TrainerX
 from dassl.metrics import compute_accuracy
 from dassl.utils import load_pretrained_weights, load_checkpoint
 from dassl.optim import build_optimizer, build_lr_scheduler
-
+from torchvision import transforms
 from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
 
 
-# import requests
-# import torch
-# from PIL import Image
-# from transformers import AlignProcessor, AlignModel
+import requests
+import torch
+from PIL import Image
+from transformers import AlignProcessor, AlignModel
 
 _tokenizer = _Tokenizer()
 
@@ -286,13 +286,20 @@ class CustomCLIP(nn.Module):
     def __init__(self, cfg, classnames, clip_model):
         super().__init__()
         self.prompt_learner = PromptLearner(cfg, classnames, clip_model)
-        print(len(classnames))
+        # print(len(classnames))
         self.tokenized_prompts = self.prompt_learner.tokenized_prompts
         self.image_encoder = clip_model.visual
         self.text_encoder = TextEncoder(clip_model)
         self.textEncoder_original=TextEncoder_original(clip_model)
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
+        self.DISTILL=cfg.TRAINER.COCOOP.DISTILL
+        self.topil=transforms.ToPILImage()
+        # breakpoint()
+        if cfg.TRAINER.COCOOP.DISTILL == "Align":
+            self.processor = AlignProcessor.from_pretrained("kakaobrain/align-base")
+            self.model_align = AlignModel.from_pretrained("kakaobrain/align-base")
+            self.candidate_labels =[f"an image of a {name}" for name in classnames]
 
     def forward(self, image, label=None):
         tokenized_prompts = self.tokenized_prompts
@@ -307,7 +314,16 @@ class CustomCLIP(nn.Module):
 
         logits = []
         logits_hand=[]
+        text_feature_all=[]
+        
+        
+        hand_text_features=self.textEncoder_original(tokenized_prompts.to("cuda"))
+        hand_text_features = hand_text_features / hand_text_features.norm(dim=-1, keepdim=True)
+        # select features for labels
+        hand_text_features_label=hand_text_features[label]
+        i=0
         for pts_i, imf_i in zip(prompts, image_features):
+        
             text_features = self.text_encoder(pts_i, tokenized_prompts)
             
             
@@ -316,33 +332,74 @@ class CustomCLIP(nn.Module):
             
             logits.append(l_i)
             if self.prompt_learner.training:
-                hand_text_features=self.textEncoder_original(tokenized_prompts.to("cuda"))
-                hand_text_features = hand_text_features / hand_text_features.norm(dim=-1, keepdim=True)
-                
-                # breakpoint()
-                li_hand=logit_scale * imf_i @ hand_text_features.t()
-                logits_hand.append(li_hand)
-                
+                if self.DISTILL=="Hand_crafted":
+                    
+                    # breakpoint()
+                    li_hand=logit_scale * imf_i @ hand_text_features.t()
+                    logits_hand.append(li_hand)
+                elif self.DISTILL=="Hand_crafted_text_to_text":
+                    text_feature_all.append(text_features[i])
+
+                elif self.DISTILL=="Align":
+                    with torch.no_grad():
+                        # breakpoint()
+                        if (image.shape[0]!=1):
+                            print("batch size should be 1...............................")
+                            exit()
+                        inputs = self.processor(text=self.candidate_labels, images=self.topil(image.squeeze(0)), return_tensors="pt")
+                        # breakpoint()
+                        inputs=inputs.to("cuda")
+                        # breakpoint()
+                        li_hand = self.model_align(**inputs).logits_per_image.squeeze(0).half()
+                        logits_hand.append(li_hand)
+            i+=1    
+        if self.DISTILL=="Hand_crafted_text_to_text" and self.prompt_learner.training:
+            text_feature_all=torch.stack(text_feature_all)
         logits = torch.stack(logits)
         
 
         if self.prompt_learner.training:
-            logits_hand=torch.stack(logits_hand)
-            temp = 1.0  # temperature parameter
-            smoothing = 0.1
-            # breakpoint()
-            # Apply temperature to logits tensors and convert to probabilities using softmax
-            probs1 = F.softmax(logits_hand / temp, dim=1)
-            probs2 = F.softmax(logits / temp, dim=1)
-            
-            # Apply label smoothing to probabilities
-            probs1 = (1 - smoothing) * probs1 + smoothing / probs1.size(1)
-            probs2 = (1 - smoothing) * probs2 + smoothing / probs2.size(1)
+            if self.DISTILL is not None:
+                if self.DISTILL=="Hand_crafted_text_to_text":
+                    logits_hand=hand_text_features_label
+                    temp = 3.0  # temperature param
+                    smoothing = 0.1
+                    # breakpoint()
+                    # Apply temperature to logits tensors and convert to probabilities using softmax
+                    probs1 = F.softmax(logits_hand / temp, dim=1)
+                    probs2 = F.softmax(text_feature_all / temp, dim=1)
+                    
+                    # Apply label smoothing to probabilities
+                    probs1 = (1 - smoothing) * probs1 + smoothing / probs1.size(1)
+                    probs2 = (1 - smoothing) * probs2 + smoothing / probs2.size(1)
 
-            # Calculate the KL divergence using F.kl_div()
-            kl_div = F.kl_div(torch.log(probs2), probs1, reduction='batchmean')
-            # print(kl_div)
-            loss=F.cross_entropy(logits, label)+kl_div
+                    # Calculate the KL divergence using F.kl_div()
+                    # breakpoint()
+                    kl_div = F.kl_div(torch.log(probs2), probs1, reduction='batchmean')
+                    # print(kl_div)
+                    loss=F.cross_entropy(logits, label)+kl_div
+            
+        
+                else:
+                    logits_hand=torch.stack(logits_hand)
+                    temp = 3.0  # temperature param
+                    smoothing = 0.1
+                    # breakpoint()
+                    # Apply temperature to logits tensors and convert to probabilities using softmax
+                    probs1 = F.softmax(logits_hand / temp, dim=1)
+                    probs2 = F.softmax(logits / temp, dim=1)
+                    
+                    # Apply label smoothing to probabilities
+                    probs1 = (1 - smoothing) * probs1 + smoothing / probs1.size(1)
+                    probs2 = (1 - smoothing) * probs2 + smoothing / probs2.size(1)
+
+                    # Calculate the KL divergence using F.kl_div()
+                    # breakpoint()
+                    kl_div = F.kl_div(torch.log(probs2), probs1, reduction='batchmean')
+                    # print(kl_div)
+                    loss=F.cross_entropy(logits, label)+kl_div
+            else:
+                loss = F.cross_entropy(logits, label)
             return loss
 
         return logits
